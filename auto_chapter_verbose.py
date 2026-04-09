@@ -38,17 +38,6 @@ def is_generic_chapters(tracks):
             return False 
     return True
 
-def search_for_asin(title, author):
-    query = urllib.parse.quote(f"{title} {author}")
-    url = f"https://api.audnex.us/search?q={query}"
-    try:
-        with urllib.request.urlopen(url, timeout=10) as response:
-            results = json.loads(response.read().decode())
-            return results[0].get("asin") if results else None
-    except Exception as e:
-        print(f"    [!] Search API failed: {e}")
-        return None
-
 def process_file(filepath):
     print(f"\n{'='*40}\n>>> FILE: {os.path.basename(filepath)}")
     all_tracks = get_mediainfo_data(filepath)
@@ -57,18 +46,26 @@ def process_file(filepath):
     general_track = next((t for t in all_tracks if t.get("@type") == "General"), {})
     extra_tags = general_track.get("extra", {})
     
+    # 1. THE ASIN GATEKEEPER
+    asin = general_track.get("CDEK") or extra_tags.get("CDEK")
+    if not asin:
+        print("    [SKIP] No CDEK/ASIN tag found. Skipping processing and movement.")
+        return
+
     # Metadata Extraction
     author = general_track.get("Performer") or general_track.get("Artist") or "Unknown Author"
     album = general_track.get("Album") or general_track.get("Title") or "Unknown Album"
     year = str(general_track.get("Recorded_Date") or general_track.get("Released_Date") or "0000")[:4]
     series = extra_tags.get("series") or "Non-Series"
-    asin = general_track.get("CDEK") or extra_tags.get("CDEK")
 
+    print(f"    [INFO] ASIN Detected: {asin}")
     print(f"    [INFO] Meta: {author} | {album} ({year})")
 
     # Chapter Retrieval
     chapters = None
     json_val = extra_tags.get("JSON") or general_track.get("JSON")
+    
+    # Check embedded JSON first (if it has multiple chapters)
     if json_val:
         try:
             try:
@@ -78,30 +75,24 @@ def process_file(filepath):
                 json_data = json.loads(json_val)
             
             temp_chapters = json_data.get("chapters")
-            # FIX: Only use embedded JSON if it has more than one chapter
             if temp_chapters and len(temp_chapters) > 1:
                 chapters = temp_chapters
                 print(f"    [INFO] Found {len(chapters)} chapters in embedded JSON tag.")
-            else:
-                print("    [DEBUG] Embedded JSON had 0 or 1 chapters. Ignoring and hitting API.")
         except: pass
 
+    # If no useful embedded JSON, hit the API using the required ASIN
     if not chapters:
-        if not asin:
-            print("    [INFO] No ASIN found in tags. Searching...")
-            asin = search_for_asin(album, author)
-        
-        if asin:
-            url = f"https://api.audnex.us/books/{asin}/chapters"
-            try:
-                with urllib.request.urlopen(url, timeout=10) as response:
-                    api_data = json.loads(response.read().decode())
-                    chapters = api_data.get("chapters")
-                    if chapters: print(f"    [INFO] Fetched {len(chapters)} chapters from API.")
-            except: pass
+        url = f"https://api.audnex.us/books/{asin}/chapters"
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                api_data = json.loads(response.read().decode())
+                chapters = api_data.get("chapters")
+                if chapters: print(f"    [INFO] Fetched {len(chapters)} chapters from API.")
+        except Exception as e:
+            print(f"    [!] API fetch failed: {e}")
 
     if not chapters:
-        print("    [SKIP] Could not find any chapter data for this book.")
+        print("    [SKIP] ASIN present but no chapter data could be retrieved.")
         return
 
     # Chapter Injection
