@@ -1,78 +1,67 @@
-
-
 # Audiobook Chapter Injector & Organizer
 
-A robust Python utility for macOS designed to automate the lifecycle of `.m4b` audiobooks. This script extracts metadata (including hidden Audible ASINs), fetches or decodes chapter titles, injects them losslessly into the file, and organizes your library into a Plex-ready directory structure.
+A specialized Python utility for macOS power users to automate the enrichment and organization of `.m4b` libraries. This script specializes in fixing "flat" audiobooks by injecting descriptive chapter titles and organizing them into a strict hierarchy optimized for **Plex**, **Prologue**, and **Audiobookshelf**.
 
-## 🚀 Features
+## 🚀 Key Features
 
-- **Deep Metadata Extraction**: Uses `MediaInfo` to find hidden `CDEK` (ASIN) tags and Base64 encoded JSON blocks.
-- **Smart Chapter Fetching**: If chapters aren't embedded, the script automatically queries the **Audnexus API** to find high-quality chapter titles.
-- **Lossless Injection**: Uses `mp4chaps` to bake markers into the `.m4b` container without re-encoding the audio.
-- **Library Organization**: Automatically moves and renames files into a structured hierarchy:
+- **Smart Chapter Overwrite**: 
+    - Automatically detects if existing chapters are generic (e.g., "Chapter 1", "1").
+    - Detects "Single-Chapter Stubs" (one marker for the whole book) and replaces them with full data.
+    - **Safe-Guard**: Skips injection if descriptive, multi-chapter titles already exist to preserve manual work.
+- **Poisoned Metadata Filtering**: Ignores embedded JSON tags that contain incomplete or single-chapter data, forcing an API refresh for the full list.
+- **Deep Metadata Extraction**: Leverages `MediaInfo` to extract hidden Audible ASINs (`CDEK`) and Base64 encoded metadata.
+- **Automated Plex Organization**: Moves and renames files into a nested structure:
   `Author / Series / Year - Title / Author - Series - Year - Title.m4b`
-- **Error Handling**: Gracefully skips files with missing metadata or network issues.
+- **Lossless Processing**: Clears old markers and injects new ones using `mp4chaps` without re-encoding the audio.
 
 ## 📋 Prerequisites
 
-This script requires two industry-standard command-line tools available via [Homebrew](https://brew.sh).
+Install the necessary command-line dependencies via [Homebrew](https://brew.sh):
 
 ```bash
 brew install mediainfo mp4v2
 ```
 
-*Note: No `pip install` is required as the script utilizes the Python Standard Library.*
-
 ## 🛠️ Installation & Usage
 
-1. **Clone the repository** or download the `auto_chapter.py` script.
-2. **Place the script** in the folder containing your `.m4b` files.
-3. **Run the script**:
+1. **Download** the `auto_chapter.py` script to your audiobook staging folder.
+2. **Permissions**: Ensure the script is executable:
+   ```bash
+   chmod +x auto_chapter.py
+   ```
+3. **Run**:
    ```bash
    python3 auto_chapter.py
    ```
 
-## 📂 Output Structure
+## 📂 Final Library Structure
 
-The script transforms your flat files into an organized library compatible with **Plex**, **Audiobookshelf**, and mobile clients like **Prologue**.
+The script generates the following structure based on your specific requirements:
 
-**Before:**
 ```text
-Cryptonomicon.m4b
-Foundation.m4b
-```
-
-**After:**
-```text
-/Neal Stephenson
-    /Non-Series
-        /2020 - Cryptonomicon
-            Neal Stephenson - Non-Series - 2020 - Cryptonomicon.m4b
-            Neal Stephenson - Non-Series - 2020 - Cryptonomicon.chapters.txt
-
 /Isaac Asimov
-    /Foundation
-        /1951 - Foundation
-            Isaac Asimov - Foundation - 1951 - Foundation.m4b
-            Isaac Asimov - Foundation - 1951 - Foundation.chapters.txt
+    /Robots
+        /2024 - The Complete Robot
+            Isaac Asimov - Robots - 2024 - The Complete Robot.m4b
+            Isaac Asimov - Robots - 2024 - The Complete Robot.chapters.txt
 ```
 
-## ⚙️ How it Works
+## ⚙️ How the "Smart Logic" Works
 
-1. **Scan**: Identifies all `.m4b` files in the current directory.
-2. **Identify**: Uses `mediainfo` to look for an Audible Product ID (ASIN).
-3. **Retrieve**: 
-   - Attempts to decode a Base64 `JSON` tag if present.
-   - Falls back to the Audnexus API if only an ASIN is found.
-4. **Write**: Generates a `.chapters.txt` file and uses `mp4chaps` to import it into the M4B.
-5. **Move**: Sanitizes metadata strings and moves the files to the final destination.
+1. **Scan**: The script identifies all `.m4b` files in its current directory.
+2. **Generic Check**: It inspects the first 3 chapters. If they are named "Chapter 1" or similar, or if there is only 1 chapter total, it flags the file for a "Full Update."
+3. **Source Selection**:
+   - **First**: It checks for an embedded JSON block with >1 chapter.
+   - **Second**: It checks for a `CDEK` (ASIN) tag to pull from the Audnexus API.
+   - **Third**: It performs a fuzzy search on Audnexus using the Title and Artist.
+4. **Clean Slate**: If updating, it runs `mp4chaps -r` to remove existing stubs before injecting the new `.chapters.txt`.
+5. **Relocate**: Sanitizes filenames (removing illegal characters like `:` or `/`) and moves the M4B and TXT pair to their new home.
 
 ## 🤝 Contributing
 
-Contributions are welcome! If you find a tag format that isn't being recognized, please open an issue with the `ffprobe` or `mediainfo` output.
+If you encounter a file that the script identifies as "Descriptive" but you believe should be overwritten, or if a specific metadata format is missed, please open an issue.
 
 ## ⚖️ License
 
-Distributed under the MIT License. See `LICENSE` for more information.
+Distributed under the MIT License.
 
----
