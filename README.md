@@ -1,4 +1,4 @@
-Here is a clean, professional `README.md` file tailored for your GitHub repository. It covers the prerequisites, the specific file structure, and how the script handles both embedded metadata and API fallbacks.
+
 
 ---
 
