@@ -1,49 +1,73 @@
 import json
 import subprocess
 import urllib.request
+import urllib.parse
 import os
 import base64
 import glob
 import shutil
+import re
+import time
 
 def format_timestamp(ms):
-    """Converts milliseconds to HH:MM:SS.mmm."""
-    hours, ms = divmod(ms, 3600000)
-    minutes, ms = divmod(ms, 60000)
-    seconds = ms / 1000.0
-    return f"{int(hours):02}:{int(minutes):02}:{seconds:06.3f}"
+    """Precise rounding to HH:MM:SS.mmm."""
+    seconds, milliseconds = divmod(ms, 1000)
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    return f"{int(hours):02}:{int(minutes):02}:{int(seconds):02}.{int(milliseconds):03}"
 
 def get_mediainfo_data(filepath):
-    """Uses MediaInfo CLI to get a full JSON metadata dump."""
     cmd = ["mediainfo", "--Output=JSON", filepath]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, check=True)
-        data = json.loads(result.stdout)
-        tracks = data.get("media", {}).get("track", [])
-        for track in tracks:
-            if track.get("@type") == "General":
-                return track
-    except Exception:
-        return {}
+        return json.loads(result.stdout).get("media", {}).get("track", [])
+    except Exception as e:
+        print(f"    [!] Error running mediainfo: {e}")
+        return []
+
+def is_generic_chapters(tracks):
+    menu_track = next((t for t in tracks if t.get("@type") == "Menu"), None)
+    if not menu_track: return True 
+    extra = menu_track.get("extra", {})
+    chapter_titles = [str(v) for k, v in extra.items() if ":" in k]
+    if len(chapter_titles) <= 1: return True
+    generic_patterns = [r"^chapter\s*\d+$", r"^\d+$", r"^part\s*\d+$"]
+    for title in chapter_titles[:3]:
+        clean_title = title.strip().lower()
+        if not any(re.match(p, clean_title) for p in generic_patterns):
+            return False 
+    return True
+
+def search_for_asin(title, author):
+    query = urllib.parse.quote(f"{title} {author}")
+    url = f"https://api.audnex.us/search?q={query}"
+    try:
+        with urllib.request.urlopen(url, timeout=10) as response:
+            results = json.loads(response.read().decode())
+            return results[0].get("asin") if results else None
+    except Exception as e:
+        print(f"    [!] Search API failed: {e}")
+        return None
 
 def process_file(filepath):
-    print(f"\n>>> Processing: {os.path.basename(filepath)}")
-    general_track = get_mediainfo_data(filepath)
+    print(f"\n{'='*40}\n>>> FILE: {os.path.basename(filepath)}")
+    all_tracks = get_mediainfo_data(filepath)
+    if not all_tracks: return
+    
+    general_track = next((t for t in all_tracks if t.get("@type") == "General"), {})
     extra_tags = general_track.get("extra", {})
     
-    # 1. Extract metadata for organization
+    # Metadata Extraction
     author = general_track.get("Performer") or general_track.get("Artist") or "Unknown Author"
     album = general_track.get("Album") or general_track.get("Title") or "Unknown Album"
-    year = general_track.get("Recorded_Date") or general_track.get("Released_Date") or "0000"
+    year = str(general_track.get("Recorded_Date") or general_track.get("Released_Date") or "0000")[:4]
     series = extra_tags.get("series") or "Non-Series"
-    
-    # Clean Year to first 4 digits
-    year = str(year)[:4]
-    
     asin = general_track.get("CDEK") or extra_tags.get("CDEK")
-    chapters = None
 
-    # 2. Extract Chapters (Embedded JSON or API Fallback)
+    print(f"    [INFO] Meta: {author} | {album} ({year})")
+
+    # Chapter Retrieval
+    chapters = None
     json_val = extra_tags.get("JSON") or general_track.get("JSON")
     if json_val:
         try:
@@ -52,68 +76,76 @@ def process_file(filepath):
                 json_data = json.loads(decoded)
             except:
                 json_data = json.loads(json_val)
-            chapters = json_data.get("chapters")
-        except: pass
-
-    if not chapters and asin:
-        url = f"https://api.audnex.us/books/{asin}/chapters"
-        try:
-            with urllib.request.urlopen(url) as response:
-                api_data = json.loads(response.read().decode())
-                chapters = api_data.get("chapters")
+            
+            temp_chapters = json_data.get("chapters")
+            # FIX: Only use embedded JSON if it has more than one chapter
+            if temp_chapters and len(temp_chapters) > 1:
+                chapters = temp_chapters
+                print(f"    [INFO] Found {len(chapters)} chapters in embedded JSON tag.")
+            else:
+                print("    [DEBUG] Embedded JSON had 0 or 1 chapters. Ignoring and hitting API.")
         except: pass
 
     if not chapters:
-        print("    [SKIP] No Chapter data found.")
+        if not asin:
+            print("    [INFO] No ASIN found in tags. Searching...")
+            asin = search_for_asin(album, author)
+        
+        if asin:
+            url = f"https://api.audnex.us/books/{asin}/chapters"
+            try:
+                with urllib.request.urlopen(url, timeout=10) as response:
+                    api_data = json.loads(response.read().decode())
+                    chapters = api_data.get("chapters")
+                    if chapters: print(f"    [INFO] Fetched {len(chapters)} chapters from API.")
+            except: pass
+
+    if not chapters:
+        print("    [SKIP] Could not find any chapter data for this book.")
         return
 
-    # 3. Create temporary .chapters.txt next to original .m4b
+    # Chapter Injection
+    should_inject = is_generic_chapters(all_tracks)
     base_name = os.path.splitext(filepath)[0]
-    temp_chapter_file = f"{base_name}.chapters.txt"
-    with open(temp_chapter_file, "w") as f:
+    chapter_file = f"{base_name}.chapters.txt"
+
+    with open(chapter_file, "w", encoding="utf-8", newline='\n') as f:
         for c in chapters:
             offset = c.get('startOffsetMs') if c.get('startOffsetMs') is not None else c.get('start_offset_ms')
             title = c.get('title', 'Unknown Chapter')
             if offset is not None:
                 f.write(f"{format_timestamp(offset)} {title}\n")
+    
+    time.sleep(0.3)
 
-    # 4. Inject chapters into original file
-    subprocess.run(["mp4chaps", "-i", filepath], capture_output=True)
-    print("    [SUCCESS] Chapters injected.")
+    if should_inject:
+        print("    [INFO] Injecting markers...")
+        subprocess.run(["mp4chaps", "-r", filepath], capture_output=True)
+        res = subprocess.run(["mp4chaps", "-i", filepath], capture_output=True, text=True)
+        if res.returncode != 0: print(f"    [!] Injection error: {res.stderr.strip()}")
 
-    # 5. Define Folder and Filename naming
-    def clean(text): 
-        # Removes characters illegal in macOS/Windows paths
-        return "".join(c for c in str(text) if c not in r'\/:*?"<>|').strip()
+    # Organization
+    def clean(text): return "".join(c for c in str(text) if c not in r'\/:*?"<>|').strip()
+    c_author, c_series, c_year, c_album = clean(author), clean(series), clean(year), clean(album)
 
-    # Cleaned metadata components
-    c_author = clean(author)
-    c_series = clean(series)
-    c_year = clean(year)
-    c_album = clean(album)
-
-    # Subfolder Path: Author / Series / Year - Title
     new_dir = os.path.join(os.getcwd(), c_author, c_series, f"{c_year} - {c_album}")
     os.makedirs(new_dir, exist_ok=True)
     
-    # Filename: Author - Series - Year - Title.m4b
-    new_base_filename = f"{c_author} - {c_series} - {c_year} - {c_album}"
-    
-    new_m4b_path = os.path.join(new_dir, f"{new_base_filename}.m4b")
-    new_txt_path = os.path.join(new_dir, f"{new_base_filename}.chapters.txt")
+    final_name = f"{c_author} - {c_series} - {c_year} - {c_album}"
+    new_m4b = os.path.join(new_dir, f"{final_name}.m4b")
+    new_txt = os.path.join(new_dir, f"{final_name}.chapters.txt")
 
-    # 6. Move and rename both files
     try:
-        shutil.move(filepath, new_m4b_path)
-        shutil.move(temp_chapter_file, new_txt_path)
-        print(f"    [MOVED] {new_m4b_path}")
+        shutil.move(filepath, new_m4b)
+        if os.path.exists(chapter_file): shutil.move(chapter_file, new_txt)
+        print(f"    [DONE] Organized into: {c_author}/{c_series}")
     except Exception as e:
-        print(f"    [ERROR] Move failed: {e}")
+        print(f"    [!] Move error: {e}")
 
 if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    os.chdir(script_dir)
     m4b_files = sorted(glob.glob("*.m4b"))
-    if not m4b_files:
-        print("No .m4b files found in current directory.")
-    else:
-        for f in m4b_files:
-            process_file(f)
+    print(f"SCRIPT START: Found {len(m4b_files)} M4B files.")
+    for f in m4b_files:
+        process_file(f)
