@@ -1,7 +1,5 @@
 
 
----
-
 # Audiobook Chapter Injector & Organizer
 
 A robust Python utility for macOS designed to automate the lifecycle of `.m4b` audiobooks. This script extracts metadata (including hidden Audible ASINs), fetches or decodes chapter titles, injects them losslessly into the file, and organizes your library into a Plex-ready directory structure.
